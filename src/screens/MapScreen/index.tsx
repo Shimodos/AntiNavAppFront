@@ -1,31 +1,24 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { StyleSheet, View, Text, TouchableOpacity, ActivityIndicator, Alert, ScrollView } from 'react-native';
+import { View, Text, TouchableOpacity, ActivityIndicator, Alert, ScrollView } from 'react-native';
 import * as Location from 'expo-location';
-import { useAppStore } from '../store';
-import { api } from '../api';
-import { POI, POICategory, Coordinates, Route, TransportMode } from '../types';
-import LeafletMap, { LeafletMapRef, MapBounds, RouteDisplay } from '../components/LeafletMap';
-import SideMenu from '../components/SideMenu';
 
-const ROUTE_COLORS = {
-  primary: '#2196F3',
-  alternative1: '#9C27B0',
-  alternative2: '#FF9800',
-};
+import { useAppStore } from '../../store';
+import { api } from '../../api';
+import { POI, POICategory, Coordinates, Route, TransportMode } from '../../types';
+import LeafletMap from '../../components/common/LeafletMap';
+import { LeafletMapRef, MapBounds, RouteDisplay } from '../../components/common/LeafletMap/types';
+import SideMenu from '../../components/common/SideMenu';
 
-const ALL_CATEGORIES = Object.values(POICategory);
-
-// Zoom threshold - POIs won't load when zoomed out beyond this level
-const INITIAL_ZOOM = 15;
-const MIN_ZOOM_FOR_POIS = 13; // Hide POIs when zoomed out too much
-
-// Helper to create a geohash-like key for an area (to track imported regions)
-const getAreaKey = (lat: number, lng: number): string => {
-  // Round to ~5km grid
-  const latKey = Math.floor(lat * 20) / 20;
-  const lngKey = Math.floor(lng * 20) / 20;
-  return `${latKey.toFixed(2)}_${lngKey.toFixed(2)}`;
-};
+import { styles } from './styles';
+import {
+  ROUTE_COLORS,
+  ALL_CATEGORIES,
+  INITIAL_ZOOM,
+  MIN_ZOOM_FOR_POIS,
+  getAreaKey,
+  formatDuration,
+  formatDistance,
+} from './constants';
 
 export default function MapScreen() {
   const mapRef = useRef<LeafletMapRef>(null);
@@ -66,13 +59,11 @@ export default function MapScreen() {
     };
   }, []);
 
-  // Reload POIs when categories change (not on bounds change - that's handled by handleMapMove)
   useEffect(() => {
     if (currentBounds && mapReady) {
       loadPOIsForBounds(currentBounds, selectedCategories, currentZoom);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedCategories]); // Only trigger on category change
+  }, [selectedCategories]);
 
   const requestLocationPermission = async () => {
     try {
@@ -106,15 +97,12 @@ export default function MapScreen() {
     }
   };
 
-  // Load POIs for visible map area, auto-import from OSM if none found
   const loadPOIsForBounds = useCallback(async (bounds: MapBounds, categories: POICategory[], zoom: number) => {
-    // Don't load if no categories selected
     if (categories.length === 0) {
       setPOIs([]);
       return;
     }
 
-    // Don't load POIs if zoomed out too much
     if (zoom < MIN_ZOOM_FOR_POIS) {
       setPOIs([]);
       return;
@@ -123,7 +111,6 @@ export default function MapScreen() {
     try {
       setIsLoading(true);
 
-      // Get POIs for bounds
       let newPois = await api.getPOIsByBbox(
         bounds.minLat,
         bounds.maxLat,
@@ -133,28 +120,24 @@ export default function MapScreen() {
         200
       );
 
-      // If no POIs found, try to import from OpenStreetMap
       if (newPois.length === 0) {
         const centerLat = (bounds.minLat + bounds.maxLat) / 2;
         const centerLng = (bounds.minLng + bounds.maxLng) / 2;
         const areaKey = getAreaKey(centerLat, centerLng);
 
-        // Only import if we haven't already imported this area
         if (!importedAreasRef.current.has(areaKey)) {
           console.log(`No POIs found, importing from OSM for area: ${areaKey}`);
           setIsImporting(true);
 
           try {
-            // Calculate radius based on bounds (approximate)
             const latDiff = bounds.maxLat - bounds.minLat;
             const lngDiff = bounds.maxLng - bounds.minLng;
-            const radiusKm = Math.max(latDiff, lngDiff) * 111 / 2; // ~111km per degree
-            const radius = Math.min(Math.max(radiusKm * 1000, 2000), 10000); // 2-10km
+            const radiusKm = Math.max(latDiff, lngDiff) * 111 / 2;
+            const radius = Math.min(Math.max(radiusKm * 1000, 2000), 10000);
 
             const result = await api.importPOIsFromOSM(centerLat, centerLng, radius);
             console.log(`Imported ${result.count} POIs for area: ${areaKey}`);
 
-            // Retry fetching POIs after import
             newPois = await api.getPOIsByBbox(
               bounds.minLat,
               bounds.maxLat,
@@ -165,16 +148,13 @@ export default function MapScreen() {
             );
           } catch (importError) {
             console.error('Error importing POIs from OSM:', importError);
-            // Don't retry failed areas for this session
           } finally {
-            // Mark area as attempted (even if failed) to prevent repeated requests
             importedAreasRef.current.add(areaKey);
             setIsImporting(false);
           }
         }
       }
 
-      // Replace POIs with ones from current viewport
       setPOIs(newPois);
     } catch (error) {
       console.error('Error loading POIs for bounds:', error);
@@ -183,7 +163,6 @@ export default function MapScreen() {
     }
   }, [setPOIs, setIsLoading]);
 
-  // Debounced load on map move
   const handleMapMove = useCallback((center: Coordinates, zoom: number, bounds: MapBounds) => {
     setMapRegion({
       ...center,
@@ -191,18 +170,16 @@ export default function MapScreen() {
       longitudeDelta: 0.02,
     });
 
-    // Save current bounds and zoom for category change reloads
     setCurrentBounds(bounds);
     setCurrentZoom(zoom);
 
-    // Debounce POI loading
     if (loadTimeoutRef.current) {
       clearTimeout(loadTimeoutRef.current);
     }
 
     loadTimeoutRef.current = setTimeout(() => {
       loadPOIsForBounds(bounds, selectedCategories, zoom);
-    }, 500); // Wait 500ms after map stops moving
+    }, 500);
   }, [setMapRegion, loadPOIsForBounds, selectedCategories]);
 
   const handleMarkerPress = (poi: POI) => {
@@ -212,7 +189,6 @@ export default function MapScreen() {
   const handleMapReady = useCallback((bounds: MapBounds) => {
     setMapReady(true);
     setCurrentBounds(bounds);
-    // Don't load POIs initially - wait for category selection
   }, []);
 
   const centerOnCurrentLocation = () => {
@@ -241,7 +217,6 @@ export default function MapScreen() {
     setSelectedCategories([...ALL_CATEGORIES]);
   };
 
-  // Navigation handling
   const handleNavigate = async () => {
     if (!selectedPOI || !currentLocation) return;
 
@@ -252,7 +227,7 @@ export default function MapScreen() {
         destination: selectedPOI.coordinates,
         settings: {
           transportMode: TransportMode.PEDESTRIAN,
-          adventureLevel: 0, // Simple navigation - get direct routes with alternatives
+          adventureLevel: 0,
           avoidHighways: false,
           avoidTolls: false,
         },
@@ -267,7 +242,6 @@ export default function MapScreen() {
       setSelectedRouteId(response.route.id);
       setSelectedPOI(null);
 
-      // Fit map to show the selected route
       if (response.route.geometry.coordinates.length > 0) {
         mapRef.current?.fitRouteBounds(response.route.geometry.coordinates);
       }
@@ -293,28 +267,12 @@ export default function MapScreen() {
     mapRef.current?.clearRoutes();
   };
 
-  // Convert routes to RouteDisplay format for LeafletMap
   const routeDisplays: RouteDisplay[] = availableRoutes.map((route, index) => ({
     route,
     color: index === 0 ? ROUTE_COLORS.primary :
            index === 1 ? ROUTE_COLORS.alternative1 : ROUTE_COLORS.alternative2,
     isSelected: route.id === selectedRouteId,
   }));
-
-  // Helper to format duration
-  const formatDuration = (seconds: number): string => {
-    const minutes = Math.round(seconds / 60);
-    if (minutes < 60) return `${minutes} min`;
-    const hours = Math.floor(minutes / 60);
-    const mins = minutes % 60;
-    return `${hours}h ${mins}m`;
-  };
-
-  // Helper to format distance
-  const formatDistance = (meters: number): string => {
-    if (meters < 1000) return `${Math.round(meters)} m`;
-    return `${(meters / 1000).toFixed(1)} km`;
-  };
 
   if (isLoadingLocation || !currentLocation) {
     return (
@@ -340,7 +298,6 @@ export default function MapScreen() {
         onMapReady={handleMapReady}
       />
 
-      {/* Burger Menu Button */}
       <TouchableOpacity
         style={styles.menuButton}
         onPress={() => setIsMenuOpen(true)}
@@ -355,7 +312,6 @@ export default function MapScreen() {
         )}
       </TouchableOpacity>
 
-      {/* Side Menu */}
       <SideMenu
         isOpen={isMenuOpen}
         onClose={() => setIsMenuOpen(false)}
@@ -365,7 +321,6 @@ export default function MapScreen() {
         onSelectAll={handleSelectAllCategories}
       />
 
-      {/* My Location Button */}
       <TouchableOpacity
         style={styles.myLocationButton}
         onPress={centerOnCurrentLocation}
@@ -373,14 +328,12 @@ export default function MapScreen() {
         <Text style={styles.myLocationIcon}>📍</Text>
       </TouchableOpacity>
 
-      {/* Loading indicator */}
       {isLoading && (
         <View style={styles.loadingOverlay}>
           <ActivityIndicator size="small" color="#2196F3" />
         </View>
       )}
 
-      {/* Importing indicator */}
       {isImporting && (
         <View style={styles.importingOverlay}>
           <ActivityIndicator size="small" color="#4CAF50" />
@@ -388,7 +341,6 @@ export default function MapScreen() {
         </View>
       )}
 
-      {/* POI count indicator */}
       <View style={styles.poiCountBadge}>
         <Text style={styles.poiCountText}>
           {currentZoom < MIN_ZOOM_FOR_POIS
@@ -397,7 +349,6 @@ export default function MapScreen() {
         </Text>
       </View>
 
-      {/* Selected POI Card */}
       {selectedPOI && (
         <View style={styles.poiCard}>
           <TouchableOpacity
@@ -432,7 +383,6 @@ export default function MapScreen() {
         </View>
       )}
 
-      {/* Route Options Panel */}
       {availableRoutes.length > 0 && (
         <View style={styles.routePanel}>
           <View style={styles.routePanelHeader}>
@@ -473,270 +423,3 @@ export default function MapScreen() {
     </View>
   );
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-  },
-  loadingContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#f5f5f5',
-  },
-  loadingText: {
-    marginTop: 16,
-    fontSize: 16,
-    color: '#666',
-  },
-  menuButton: {
-    position: 'absolute',
-    top: 50,
-    left: 16,
-    width: 44,
-    height: 44,
-    borderRadius: 8,
-    backgroundColor: 'white',
-    justifyContent: 'center',
-    alignItems: 'center',
-    elevation: 4,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 4,
-    gap: 4,
-  },
-  burgerLine: {
-    width: 22,
-    height: 3,
-    backgroundColor: '#333',
-    borderRadius: 1.5,
-  },
-  badge: {
-    position: 'absolute',
-    top: -6,
-    right: -6,
-    minWidth: 20,
-    height: 20,
-    borderRadius: 10,
-    backgroundColor: '#2196F3',
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: 4,
-  },
-  badgeText: {
-    color: 'white',
-    fontSize: 11,
-    fontWeight: 'bold',
-  },
-  myLocationButton: {
-    position: 'absolute',
-    bottom: 200,
-    right: 16,
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: 'white',
-    justifyContent: 'center',
-    alignItems: 'center',
-    elevation: 4,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 4,
-  },
-  myLocationIcon: {
-    fontSize: 24,
-  },
-  loadingOverlay: {
-    position: 'absolute',
-    top: 60,
-    alignSelf: 'center',
-    backgroundColor: 'white',
-    padding: 8,
-    borderRadius: 20,
-    elevation: 4,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 4,
-  },
-  importingOverlay: {
-    position: 'absolute',
-    top: 100,
-    alignSelf: 'center',
-    backgroundColor: 'white',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 20,
-    elevation: 4,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.25,
-    shadowRadius: 4,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  importingText: {
-    fontSize: 13,
-    color: '#4CAF50',
-    fontWeight: '500',
-  },
-  poiCountBadge: {
-    position: 'absolute',
-    top: 50,
-    alignSelf: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.95)',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 16,
-    elevation: 3,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.2,
-    shadowRadius: 2,
-  },
-  poiCountText: {
-    fontSize: 13,
-    color: '#666',
-    fontWeight: '500',
-  },
-  poiCard: {
-    position: 'absolute',
-    bottom: 32,
-    left: 16,
-    right: 16,
-    backgroundColor: 'white',
-    borderRadius: 16,
-    padding: 16,
-    elevation: 8,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-  },
-  closeButton: {
-    position: 'absolute',
-    top: 8,
-    right: 12,
-    width: 28,
-    height: 28,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  closeButtonText: {
-    fontSize: 24,
-    color: '#999',
-  },
-  poiName: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#333',
-    marginRight: 32,
-  },
-  poiCategory: {
-    fontSize: 14,
-    color: '#666',
-    marginTop: 4,
-    textTransform: 'capitalize',
-  },
-  poiDescription: {
-    fontSize: 14,
-    color: '#666',
-    marginTop: 8,
-  },
-  poiRating: {
-    fontSize: 14,
-    marginTop: 8,
-    color: '#FF9800',
-  },
-  navigateButton: {
-    backgroundColor: '#2196F3',
-    borderRadius: 8,
-    padding: 12,
-    marginTop: 12,
-    alignItems: 'center',
-  },
-  navigateButtonText: {
-    color: 'white',
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  navigateButtonDisabled: {
-    backgroundColor: '#90CAF9',
-  },
-  routePanel: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    right: 0,
-    backgroundColor: 'white',
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    padding: 16,
-    paddingBottom: 32,
-    elevation: 10,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: -4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-  },
-  routePanelHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: 12,
-  },
-  routePanelTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#333',
-  },
-  cancelButton: {
-    fontSize: 16,
-    color: '#F44336',
-    fontWeight: '500',
-  },
-  routeList: {
-    marginBottom: 16,
-  },
-  routeOption: {
-    width: 100,
-    padding: 12,
-    marginRight: 12,
-    borderRadius: 12,
-    borderWidth: 2,
-    backgroundColor: '#f5f5f5',
-    alignItems: 'center',
-  },
-  routeOptionSelected: {
-    backgroundColor: '#E3F2FD',
-  },
-  routeOptionLabel: {
-    fontSize: 14,
-    fontWeight: 'bold',
-    color: '#333',
-    marginBottom: 4,
-  },
-  routeOptionDistance: {
-    fontSize: 13,
-    color: '#666',
-  },
-  routeOptionDuration: {
-    fontSize: 12,
-    color: '#999',
-    marginTop: 2,
-  },
-  startNavigationButton: {
-    backgroundColor: '#4CAF50',
-    borderRadius: 12,
-    padding: 16,
-    alignItems: 'center',
-  },
-  startNavigationButtonText: {
-    color: 'white',
-    fontSize: 18,
-    fontWeight: 'bold',
-  },
-});

@@ -1,103 +1,5 @@
-import React, { useRef, useEffect, useCallback, forwardRef, useImperativeHandle, useState } from 'react';
-import { StyleSheet } from 'react-native';
-import { WebView, WebViewMessageEvent } from 'react-native-webview';
-import { Coordinates, POI, POICategory, Route } from '../types';
-
-const CATEGORY_COLORS: Record<string, string> = {
-  museum: '#9C27B0',
-  gallery: '#673AB7',
-  park: '#4CAF50',
-  garden: '#8BC34A',
-  viewpoint: '#FF9800',
-  restaurant: '#F44336',
-  cafe: '#795548',
-  bar: '#E91E63',
-  monument: '#607D8B',
-  historical: '#3F51B5',
-  default: '#2196F3',
-};
-
-export interface MapBounds {
-  minLat: number;
-  maxLat: number;
-  minLng: number;
-  maxLng: number;
-}
-
-export interface RouteDisplay {
-  route: Route;
-  color: string;
-  isSelected: boolean;
-}
-
-interface LeafletMapProps {
-  center: Coordinates;
-  zoom?: number;
-  pois?: POI[];
-  routes?: RouteDisplay[];
-  userLocation?: Coordinates | null;
-  onMapMove?: (center: Coordinates, zoom: number, bounds: MapBounds) => void;
-  onMarkerPress?: (poi: POI) => void;
-  onRoutePress?: (routeId: string) => void;
-  onMapReady?: (bounds: MapBounds) => void;
-}
-
-export interface LeafletMapRef {
-  centerOnLocation: (lat: number, lng: number, zoom?: number) => void;
-  fitRouteBounds: (coordinates: [number, number][]) => void;
-  clearRoutes: () => void;
-}
-
-const LeafletMap = forwardRef<LeafletMapRef, LeafletMapProps>(({
-  center,
-  zoom = 15,
-  pois = [],
-  routes = [],
-  userLocation,
-  onMapMove,
-  onMarkerPress,
-  onRoutePress,
-  onMapReady,
-}, ref) => {
-  const webViewRef = useRef<WebView>(null);
-  const poisRef = useRef<POI[]>(pois);
-  const routesRef = useRef<RouteDisplay[]>(routes);
-  const mapReadyRef = useRef(false);
-  const [isMapReady, setIsMapReady] = useState(false);
-
-  // Keep refs updated for message handler
-  useEffect(() => {
-    poisRef.current = pois;
-  }, [pois]);
-
-  useEffect(() => {
-    routesRef.current = routes;
-  }, [routes]);
-
-  const getMarkerColor = (category: POICategory): string => {
-    return CATEGORY_COLORS[category] || CATEGORY_COLORS.default;
-  };
-
-  // Expose methods via ref
-  useImperativeHandle(ref, () => ({
-    centerOnLocation: (lat: number, lng: number, newZoom?: number) => {
-      webViewRef.current?.injectJavaScript(
-        `window.setCenter(${lat}, ${lng}, ${newZoom || zoom}); true;`
-      );
-    },
-    fitRouteBounds: (coordinates: [number, number][]) => {
-      webViewRef.current?.injectJavaScript(
-        `window.fitRouteBounds(${JSON.stringify(coordinates)}); true;`
-      );
-    },
-    clearRoutes: () => {
-      webViewRef.current?.injectJavaScript(`window.clearRoutes(); true;`);
-    },
-  }));
-
-  // Generate HTML only once (no pois dependency)
-  const generateHTML = useCallback(() => {
-    return `
+export const generateMapHTML = (lat: number, lng: number, zoom: number): string => {
+  return `
 <!DOCTYPE html>
 <html>
 <head>
@@ -147,11 +49,10 @@ const LeafletMap = forwardRef<LeafletMapRef, LeafletMapProps>(({
     var map = L.map('map', {
       zoomControl: false,
       attributionControl: true
-    }).setView([${center.latitude}, ${center.longitude}], ${zoom});
+    }).setView([${lat}, ${lng}], ${zoom});
 
     L.control.zoom({ position: 'topright' }).addTo(map);
 
-    // OpenStreetMap tiles (free!)
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
       maxZoom: 19,
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
@@ -162,7 +63,6 @@ const LeafletMap = forwardRef<LeafletMapRef, LeafletMapProps>(({
     var routePolylines = {};
     var destinationMarker = null;
 
-    // Helper to get bounds
     function getBoundsData() {
       var bounds = map.getBounds();
       return {
@@ -173,7 +73,6 @@ const LeafletMap = forwardRef<LeafletMapRef, LeafletMapProps>(({
       };
     }
 
-    // Map events
     map.on('moveend', function() {
       var center = map.getCenter();
       var bounds = getBoundsData();
@@ -186,7 +85,6 @@ const LeafletMap = forwardRef<LeafletMapRef, LeafletMapProps>(({
       }));
     });
 
-    // Map ready - send after tiles load
     map.whenReady(function() {
       var bounds = getBoundsData();
       window.ReactNativeWebView.postMessage(JSON.stringify({
@@ -195,7 +93,6 @@ const LeafletMap = forwardRef<LeafletMapRef, LeafletMapProps>(({
       }));
     });
 
-    // Functions callable from React Native
     window.setCenter = function(lat, lng, zoom) {
       map.setView([lat, lng], zoom || map.getZoom(), { animate: true });
     };
@@ -218,7 +115,6 @@ const LeafletMap = forwardRef<LeafletMapRef, LeafletMapProps>(({
     };
 
     window.updateMarkers = function(poisData) {
-      // Remove markers that are no longer in the list
       var newIds = {};
       poisData.forEach(function(poi) {
         newIds[poi.id] = true;
@@ -231,7 +127,6 @@ const LeafletMap = forwardRef<LeafletMapRef, LeafletMapProps>(({
         }
       });
 
-      // Add new markers
       poisData.forEach(function(poi) {
         if (!markers[poi.id]) {
           var icon = L.divIcon({
@@ -263,13 +158,11 @@ const LeafletMap = forwardRef<LeafletMapRef, LeafletMapProps>(({
     };
 
     window.updateRoutes = function(routesData) {
-      // Remove old routes
       Object.values(routePolylines).forEach(function(polyline) {
         map.removeLayer(polyline);
       });
       routePolylines = {};
 
-      // Remove old destination marker
       if (destinationMarker) {
         map.removeLayer(destinationMarker);
         destinationMarker = null;
@@ -277,14 +170,13 @@ const LeafletMap = forwardRef<LeafletMapRef, LeafletMapProps>(({
 
       if (!routesData || routesData.length === 0) return;
 
-      // Draw routes (non-selected first, selected last to be on top)
       var sortedRoutes = routesData.slice().sort(function(a, b) {
         return a.isSelected ? 1 : -1;
       });
 
       sortedRoutes.forEach(function(routeData) {
         var coords = routeData.coordinates.map(function(c) {
-          return [c[1], c[0]]; // GeoJSON is [lng, lat], Leaflet needs [lat, lng]
+          return [c[1], c[0]];
         });
 
         var polyline = L.polyline(coords, {
@@ -305,7 +197,6 @@ const LeafletMap = forwardRef<LeafletMapRef, LeafletMapProps>(({
         routePolylines[routeData.id] = polyline;
       });
 
-      // Add destination marker for selected route
       var selectedRoute = routesData.find(function(r) { return r.isSelected; });
       if (selectedRoute && selectedRoute.coordinates.length > 0) {
         var destCoord = selectedRoute.coordinates[selectedRoute.coordinates.length - 1];
@@ -343,105 +234,5 @@ const LeafletMap = forwardRef<LeafletMapRef, LeafletMapProps>(({
   </script>
 </body>
 </html>
-    `;
-  }, [center.latitude, center.longitude, zoom]); // Only depend on initial center/zoom
-
-  const handleMessage = (event: WebViewMessageEvent) => {
-    try {
-      const data = JSON.parse(event.nativeEvent.data);
-
-      switch (data.type) {
-        case 'mapReady':
-          mapReadyRef.current = true;
-          setIsMapReady(true);
-          // Immediately update user location when map is ready
-          if (userLocation && webViewRef.current) {
-            webViewRef.current.injectJavaScript(
-              `window.updateUserLocation(${userLocation.latitude}, ${userLocation.longitude}); true;`
-            );
-          }
-          onMapReady?.(data.bounds);
-          break;
-        case 'mapMove':
-          onMapMove?.({ latitude: data.lat, longitude: data.lng }, data.zoom, data.bounds);
-          break;
-        case 'markerPress':
-          const poi = poisRef.current.find((p) => p.id === data.poiId);
-          if (poi) {
-            onMarkerPress?.(poi);
-          }
-          break;
-        case 'routePress':
-          onRoutePress?.(data.routeId);
-          break;
-      }
-    } catch (e) {
-      console.error('Error parsing WebView message:', e);
-    }
-  };
-
-  // Update user location
-  useEffect(() => {
-    if (userLocation && webViewRef.current && isMapReady) {
-      webViewRef.current.injectJavaScript(
-        `window.updateUserLocation(${userLocation.latitude}, ${userLocation.longitude}); true;`
-      );
-    }
-  }, [userLocation, isMapReady]);
-
-  // Update POI markers via JavaScript injection (NOT re-rendering WebView)
-  useEffect(() => {
-    if (webViewRef.current && isMapReady) {
-      const poisData = pois.map((poi) => ({
-        id: poi.id,
-        lat: poi.coordinates.latitude,
-        lng: poi.coordinates.longitude,
-        color: getMarkerColor(poi.category),
-      }));
-
-      webViewRef.current.injectJavaScript(
-        `window.updateMarkers(${JSON.stringify(poisData)}); true;`
-      );
-    }
-  }, [pois, isMapReady]);
-
-  // Update routes via JavaScript injection
-  useEffect(() => {
-    if (webViewRef.current && isMapReady) {
-      const routesData = routes.map((rd) => ({
-        id: rd.route.id,
-        coordinates: rd.route.geometry.coordinates,
-        color: rd.color,
-        isSelected: rd.isSelected,
-      }));
-
-      webViewRef.current.injectJavaScript(
-        `window.updateRoutes(${JSON.stringify(routesData)}); true;`
-      );
-    }
-  }, [routes, isMapReady]);
-
-  return (
-    <WebView
-      ref={webViewRef}
-      style={styles.webview}
-      source={{ html: generateHTML() }}
-      onMessage={handleMessage}
-      javaScriptEnabled
-      domStorageEnabled
-      startInLoadingState
-      scalesPageToFit={false}
-      scrollEnabled={false}
-      bounces={false}
-      overScrollMode="never"
-    />
-  );
-});
-
-export default LeafletMap;
-
-const styles = StyleSheet.create({
-  webview: {
-    flex: 1,
-  },
-});
+  `;
+};
