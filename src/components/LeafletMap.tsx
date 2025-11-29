@@ -1,7 +1,7 @@
 import React, { useRef, useEffect, useCallback, forwardRef, useImperativeHandle, useState } from 'react';
 import { StyleSheet } from 'react-native';
 import { WebView, WebViewMessageEvent } from 'react-native-webview';
-import { Coordinates, POI, POICategory } from '../types';
+import { Coordinates, POI, POICategory, Route } from '../types';
 
 const CATEGORY_COLORS: Record<string, string> = {
   museum: '#9C27B0',
@@ -24,38 +24,55 @@ export interface MapBounds {
   maxLng: number;
 }
 
+export interface RouteDisplay {
+  route: Route;
+  color: string;
+  isSelected: boolean;
+}
+
 interface LeafletMapProps {
   center: Coordinates;
   zoom?: number;
   pois?: POI[];
+  routes?: RouteDisplay[];
   userLocation?: Coordinates | null;
   onMapMove?: (center: Coordinates, zoom: number, bounds: MapBounds) => void;
   onMarkerPress?: (poi: POI) => void;
+  onRoutePress?: (routeId: string) => void;
   onMapReady?: (bounds: MapBounds) => void;
 }
 
 export interface LeafletMapRef {
   centerOnLocation: (lat: number, lng: number, zoom?: number) => void;
+  fitRouteBounds: (coordinates: [number, number][]) => void;
+  clearRoutes: () => void;
 }
 
 const LeafletMap = forwardRef<LeafletMapRef, LeafletMapProps>(({
   center,
   zoom = 15,
   pois = [],
+  routes = [],
   userLocation,
   onMapMove,
   onMarkerPress,
+  onRoutePress,
   onMapReady,
 }, ref) => {
   const webViewRef = useRef<WebView>(null);
   const poisRef = useRef<POI[]>(pois);
+  const routesRef = useRef<RouteDisplay[]>(routes);
   const mapReadyRef = useRef(false);
   const [isMapReady, setIsMapReady] = useState(false);
 
-  // Keep poisRef updated for message handler
+  // Keep refs updated for message handler
   useEffect(() => {
     poisRef.current = pois;
   }, [pois]);
+
+  useEffect(() => {
+    routesRef.current = routes;
+  }, [routes]);
 
   const getMarkerColor = (category: POICategory): string => {
     return CATEGORY_COLORS[category] || CATEGORY_COLORS.default;
@@ -67,6 +84,14 @@ const LeafletMap = forwardRef<LeafletMapRef, LeafletMapProps>(({
       webViewRef.current?.injectJavaScript(
         `window.setCenter(${lat}, ${lng}, ${newZoom || zoom}); true;`
       );
+    },
+    fitRouteBounds: (coordinates: [number, number][]) => {
+      webViewRef.current?.injectJavaScript(
+        `window.fitRouteBounds(${JSON.stringify(coordinates)}); true;`
+      );
+    },
+    clearRoutes: () => {
+      webViewRef.current?.injectJavaScript(`window.clearRoutes(); true;`);
     },
   }));
 
@@ -134,6 +159,8 @@ const LeafletMap = forwardRef<LeafletMapRef, LeafletMapProps>(({
 
     var markers = {};
     var userMarker = null;
+    var routePolylines = {};
+    var destinationMarker = null;
 
     // Helper to get bounds
     function getBoundsData() {
@@ -234,6 +261,85 @@ const LeafletMap = forwardRef<LeafletMapRef, LeafletMapProps>(({
       });
       markers = {};
     };
+
+    window.updateRoutes = function(routesData) {
+      // Remove old routes
+      Object.values(routePolylines).forEach(function(polyline) {
+        map.removeLayer(polyline);
+      });
+      routePolylines = {};
+
+      // Remove old destination marker
+      if (destinationMarker) {
+        map.removeLayer(destinationMarker);
+        destinationMarker = null;
+      }
+
+      if (!routesData || routesData.length === 0) return;
+
+      // Draw routes (non-selected first, selected last to be on top)
+      var sortedRoutes = routesData.slice().sort(function(a, b) {
+        return a.isSelected ? 1 : -1;
+      });
+
+      sortedRoutes.forEach(function(routeData) {
+        var coords = routeData.coordinates.map(function(c) {
+          return [c[1], c[0]]; // GeoJSON is [lng, lat], Leaflet needs [lat, lng]
+        });
+
+        var polyline = L.polyline(coords, {
+          color: routeData.color,
+          weight: routeData.isSelected ? 6 : 4,
+          opacity: routeData.isSelected ? 1 : 0.6,
+          lineCap: 'round',
+          lineJoin: 'round'
+        }).addTo(map);
+
+        polyline.on('click', function() {
+          window.ReactNativeWebView.postMessage(JSON.stringify({
+            type: 'routePress',
+            routeId: routeData.id
+          }));
+        });
+
+        routePolylines[routeData.id] = polyline;
+      });
+
+      // Add destination marker for selected route
+      var selectedRoute = routesData.find(function(r) { return r.isSelected; });
+      if (selectedRoute && selectedRoute.coordinates.length > 0) {
+        var destCoord = selectedRoute.coordinates[selectedRoute.coordinates.length - 1];
+        var destIcon = L.divIcon({
+          className: 'destination-marker',
+          html: '<div style="width:24px;height:24px;background:#F44336;border-radius:50%;border:3px solid white;box-shadow:0 2px 6px rgba(0,0,0,0.3);"></div>',
+          iconSize: [24, 24],
+          iconAnchor: [12, 12]
+        });
+        destinationMarker = L.marker([destCoord[1], destCoord[0]], {
+          icon: destIcon,
+          zIndexOffset: 900
+        }).addTo(map);
+      }
+    };
+
+    window.clearRoutes = function() {
+      Object.values(routePolylines).forEach(function(polyline) {
+        map.removeLayer(polyline);
+      });
+      routePolylines = {};
+      if (destinationMarker) {
+        map.removeLayer(destinationMarker);
+        destinationMarker = null;
+      }
+    };
+
+    window.fitRouteBounds = function(coordinates) {
+      if (!coordinates || coordinates.length === 0) return;
+      var bounds = L.latLngBounds(coordinates.map(function(c) {
+        return [c[1], c[0]];
+      }));
+      map.fitBounds(bounds, { padding: [50, 50] });
+    };
   </script>
 </body>
 </html>
@@ -265,6 +371,9 @@ const LeafletMap = forwardRef<LeafletMapRef, LeafletMapProps>(({
             onMarkerPress?.(poi);
           }
           break;
+        case 'routePress':
+          onRoutePress?.(data.routeId);
+          break;
       }
     } catch (e) {
       console.error('Error parsing WebView message:', e);
@@ -295,6 +404,22 @@ const LeafletMap = forwardRef<LeafletMapRef, LeafletMapProps>(({
       );
     }
   }, [pois, isMapReady]);
+
+  // Update routes via JavaScript injection
+  useEffect(() => {
+    if (webViewRef.current && isMapReady) {
+      const routesData = routes.map((rd) => ({
+        id: rd.route.id,
+        coordinates: rd.route.geometry.coordinates,
+        color: rd.color,
+        isSelected: rd.isSelected,
+      }));
+
+      webViewRef.current.injectJavaScript(
+        `window.updateRoutes(${JSON.stringify(routesData)}); true;`
+      );
+    }
+  }, [routes, isMapReady]);
 
   return (
     <WebView

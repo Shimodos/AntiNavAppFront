@@ -1,11 +1,17 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { StyleSheet, View, Text, TouchableOpacity, ActivityIndicator, Alert } from 'react-native';
+import { StyleSheet, View, Text, TouchableOpacity, ActivityIndicator, Alert, ScrollView } from 'react-native';
 import * as Location from 'expo-location';
 import { useAppStore } from '../store';
 import { api } from '../api';
-import { POI, POICategory, Coordinates } from '../types';
-import LeafletMap, { LeafletMapRef, MapBounds } from '../components/LeafletMap';
+import { POI, POICategory, Coordinates, Route, TransportMode } from '../types';
+import LeafletMap, { LeafletMapRef, MapBounds, RouteDisplay } from '../components/LeafletMap';
 import SideMenu from '../components/SideMenu';
+
+const ROUTE_COLORS = {
+  primary: '#2196F3',
+  alternative1: '#9C27B0',
+  alternative2: '#FF9800',
+};
 
 const ALL_CATEGORIES = Object.values(POICategory);
 
@@ -29,6 +35,9 @@ export default function MapScreen() {
   const [currentBounds, setCurrentBounds] = useState<MapBounds | null>(null);
   const [currentZoom, setCurrentZoom] = useState(INITIAL_ZOOM);
   const [isImporting, setIsImporting] = useState(false);
+  const [isNavigating, setIsNavigating] = useState(false);
+  const [availableRoutes, setAvailableRoutes] = useState<Route[]>([]);
+  const [selectedRouteId, setSelectedRouteId] = useState<string | null>(null);
   const loadTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const importedAreasRef = useRef<Set<string>>(new Set());
 
@@ -232,6 +241,81 @@ export default function MapScreen() {
     setSelectedCategories([...ALL_CATEGORIES]);
   };
 
+  // Navigation handling
+  const handleNavigate = async () => {
+    if (!selectedPOI || !currentLocation) return;
+
+    setIsNavigating(true);
+    try {
+      const response = await api.createRoute({
+        origin: currentLocation,
+        destination: selectedPOI.coordinates,
+        settings: {
+          transportMode: TransportMode.PEDESTRIAN,
+          adventureLevel: 0, // Simple navigation - get direct routes with alternatives
+          avoidHighways: false,
+          avoidTolls: false,
+        },
+      });
+
+      const allRoutes = [response.route];
+      if (response.alternativeRoutes) {
+        allRoutes.push(...response.alternativeRoutes);
+      }
+
+      setAvailableRoutes(allRoutes);
+      setSelectedRouteId(response.route.id);
+      setSelectedPOI(null);
+
+      // Fit map to show the selected route
+      if (response.route.geometry.coordinates.length > 0) {
+        mapRef.current?.fitRouteBounds(response.route.geometry.coordinates);
+      }
+    } catch (error) {
+      console.error('Error creating route:', error);
+      Alert.alert('Navigation Error', 'Failed to create route. Please try again.');
+    } finally {
+      setIsNavigating(false);
+    }
+  };
+
+  const handleRouteSelect = (routeId: string) => {
+    setSelectedRouteId(routeId);
+    const route = availableRoutes.find(r => r.id === routeId);
+    if (route && route.geometry.coordinates.length > 0) {
+      mapRef.current?.fitRouteBounds(route.geometry.coordinates);
+    }
+  };
+
+  const handleCancelNavigation = () => {
+    setAvailableRoutes([]);
+    setSelectedRouteId(null);
+    mapRef.current?.clearRoutes();
+  };
+
+  // Convert routes to RouteDisplay format for LeafletMap
+  const routeDisplays: RouteDisplay[] = availableRoutes.map((route, index) => ({
+    route,
+    color: index === 0 ? ROUTE_COLORS.primary :
+           index === 1 ? ROUTE_COLORS.alternative1 : ROUTE_COLORS.alternative2,
+    isSelected: route.id === selectedRouteId,
+  }));
+
+  // Helper to format duration
+  const formatDuration = (seconds: number): string => {
+    const minutes = Math.round(seconds / 60);
+    if (minutes < 60) return `${minutes} min`;
+    const hours = Math.floor(minutes / 60);
+    const mins = minutes % 60;
+    return `${hours}h ${mins}m`;
+  };
+
+  // Helper to format distance
+  const formatDistance = (meters: number): string => {
+    if (meters < 1000) return `${Math.round(meters)} m`;
+    return `${(meters / 1000).toFixed(1)} km`;
+  };
+
   if (isLoadingLocation || !currentLocation) {
     return (
       <View style={styles.loadingContainer}>
@@ -248,9 +332,11 @@ export default function MapScreen() {
         center={currentLocation}
         zoom={INITIAL_ZOOM}
         pois={pois}
+        routes={routeDisplays}
         userLocation={currentLocation}
         onMapMove={handleMapMove}
         onMarkerPress={handleMarkerPress}
+        onRoutePress={handleRouteSelect}
         onMapReady={handleMapReady}
       />
 
@@ -332,8 +418,55 @@ export default function MapScreen() {
               Rating: {selectedPOI.rating.toFixed(1)}
             </Text>
           )}
-          <TouchableOpacity style={styles.navigateButton}>
-            <Text style={styles.navigateButtonText}>Navigate</Text>
+          <TouchableOpacity
+            style={[styles.navigateButton, isNavigating && styles.navigateButtonDisabled]}
+            onPress={handleNavigate}
+            disabled={isNavigating}
+          >
+            {isNavigating ? (
+              <ActivityIndicator size="small" color="white" />
+            ) : (
+              <Text style={styles.navigateButtonText}>Navigate</Text>
+            )}
+          </TouchableOpacity>
+        </View>
+      )}
+
+      {/* Route Options Panel */}
+      {availableRoutes.length > 0 && (
+        <View style={styles.routePanel}>
+          <View style={styles.routePanelHeader}>
+            <Text style={styles.routePanelTitle}>Route Options</Text>
+            <TouchableOpacity onPress={handleCancelNavigation}>
+              <Text style={styles.cancelButton}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.routeList}>
+            {availableRoutes.map((route, index) => (
+              <TouchableOpacity
+                key={route.id}
+                style={[
+                  styles.routeOption,
+                  route.id === selectedRouteId && styles.routeOptionSelected,
+                  { borderColor: index === 0 ? ROUTE_COLORS.primary :
+                                 index === 1 ? ROUTE_COLORS.alternative1 : ROUTE_COLORS.alternative2 }
+                ]}
+                onPress={() => handleRouteSelect(route.id)}
+              >
+                <Text style={styles.routeOptionLabel}>
+                  {index === 0 ? 'Optimal' : `Alt ${index}`}
+                </Text>
+                <Text style={styles.routeOptionDistance}>
+                  {formatDistance(route.distance)}
+                </Text>
+                <Text style={styles.routeOptionDuration}>
+                  {formatDuration(route.duration)}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+          <TouchableOpacity style={styles.startNavigationButton}>
+            <Text style={styles.startNavigationButtonText}>Start Navigation</Text>
           </TouchableOpacity>
         </View>
       )}
@@ -529,5 +662,81 @@ const styles = StyleSheet.create({
     color: 'white',
     fontSize: 16,
     fontWeight: '600',
+  },
+  navigateButtonDisabled: {
+    backgroundColor: '#90CAF9',
+  },
+  routePanel: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: 'white',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 16,
+    paddingBottom: 32,
+    elevation: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+  },
+  routePanelHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  routePanelTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#333',
+  },
+  cancelButton: {
+    fontSize: 16,
+    color: '#F44336',
+    fontWeight: '500',
+  },
+  routeList: {
+    marginBottom: 16,
+  },
+  routeOption: {
+    width: 100,
+    padding: 12,
+    marginRight: 12,
+    borderRadius: 12,
+    borderWidth: 2,
+    backgroundColor: '#f5f5f5',
+    alignItems: 'center',
+  },
+  routeOptionSelected: {
+    backgroundColor: '#E3F2FD',
+  },
+  routeOptionLabel: {
+    fontSize: 14,
+    fontWeight: 'bold',
+    color: '#333',
+    marginBottom: 4,
+  },
+  routeOptionDistance: {
+    fontSize: 13,
+    color: '#666',
+  },
+  routeOptionDuration: {
+    fontSize: 12,
+    color: '#999',
+    marginTop: 2,
+  },
+  startNavigationButton: {
+    backgroundColor: '#4CAF50',
+    borderRadius: 12,
+    padding: 16,
+    alignItems: 'center',
+  },
+  startNavigationButtonText: {
+    color: 'white',
+    fontSize: 18,
+    fontWeight: 'bold',
   },
 });
