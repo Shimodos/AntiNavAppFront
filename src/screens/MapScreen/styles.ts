@@ -4,6 +4,13 @@ export const styles = StyleSheet.create({
   container: {
     flex: 1,
   },
+  topLeftControls: {
+    position: 'absolute',
+    top: 50,
+    left: 16,
+    gap: 12,
+    alignItems: 'center',
+  },
   loadingContainer: {
     flex: 1,
     justifyContent: 'center',
@@ -16,9 +23,6 @@ export const styles = StyleSheet.create({
     color: '#666',
   },
   menuButton: {
-    position: 'absolute',
-    top: 50,
-    left: 16,
     width: 44,
     height: 44,
     borderRadius: 8,
@@ -259,6 +263,9 @@ export const styles = StyleSheet.create({
     borderRadius: 12,
     padding: 16,
     alignItems: 'center',
+  },
+  stopNavigationButton: {
+    backgroundColor: '#F44336',
   },
   startNavigationButtonText: {
     color: 'white',

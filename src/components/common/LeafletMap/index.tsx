@@ -13,10 +13,13 @@ const LeafletMap = forwardRef<LeafletMapRef, LeafletMapProps>(({
   pois = [],
   routes = [],
   userLocation,
+  userHeading = null,
+  isNavigating = false,
   onMapMove,
   onMarkerPress,
   onRoutePress,
   onMapReady,
+  onBearingChange,
 }, ref) => {
   const webViewRef = useRef<WebView>(null);
   const poisRef = useRef<POI[]>(pois);
@@ -47,6 +50,16 @@ const LeafletMap = forwardRef<LeafletMapRef, LeafletMapProps>(({
     },
     clearRoutes: () => {
       webViewRef.current?.injectJavaScript(`window.clearRoutes(); true;`);
+    },
+    setBearing: (bearing: number) => {
+      webViewRef.current?.injectJavaScript(
+        `window.setBearing(${bearing}); true;`
+      );
+    },
+    setNavigationView: (lat: number, lng: number, heading: number, navZoom?: number) => {
+      webViewRef.current?.injectJavaScript(
+        `window.setNavigationView(${lat}, ${lng}, ${heading}, ${navZoom || 18}); true;`
+      );
     },
   }));
 
@@ -82,20 +95,33 @@ const LeafletMap = forwardRef<LeafletMapRef, LeafletMapProps>(({
         case 'routePress':
           onRoutePress?.(data.routeId);
           break;
+        case 'bearingChange':
+          onBearingChange?.(data.bearing);
+          break;
       }
     } catch (e) {
       console.error('Error parsing WebView message:', e);
     }
   };
 
-  // Update user location
+  // Update user location with heading
   useEffect(() => {
     if (userLocation && webViewRef.current && isMapReady) {
+      const heading = userHeading ?? 0;
       webViewRef.current.injectJavaScript(
-        `window.updateUserLocation(${userLocation.latitude}, ${userLocation.longitude}); true;`
+        `window.updateUserLocation(${userLocation.latitude}, ${userLocation.longitude}, ${heading}); true;`
       );
     }
-  }, [userLocation, isMapReady]);
+  }, [userLocation, userHeading, isMapReady]);
+
+  // Update navigation mode
+  useEffect(() => {
+    if (webViewRef.current && isMapReady) {
+      webViewRef.current.injectJavaScript(
+        `window.setNavigationMode(${isNavigating}); true;`
+      );
+    }
+  }, [isNavigating, isMapReady]);
 
   // Update POI markers
   useEffect(() => {

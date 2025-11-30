@@ -8,6 +8,7 @@ import { POI, POICategory, Coordinates, Route, TransportMode } from '../../types
 import LeafletMap from '../../components/common/LeafletMap';
 import { LeafletMapRef, MapBounds, RouteDisplay } from '../../components/common/LeafletMap/types';
 import SideMenu from '../../components/common/SideMenu';
+import Compass from '../../components/common/Compass';
 
 import { styles } from './styles';
 import {
@@ -28,11 +29,15 @@ export default function MapScreen() {
   const [currentBounds, setCurrentBounds] = useState<MapBounds | null>(null);
   const [currentZoom, setCurrentZoom] = useState(INITIAL_ZOOM);
   const [isImporting, setIsImporting] = useState(false);
-  const [isNavigating, setIsNavigating] = useState(false);
+  const [isCreatingRoute, setIsCreatingRoute] = useState(false);
   const [availableRoutes, setAvailableRoutes] = useState<Route[]>([]);
   const [selectedRouteId, setSelectedRouteId] = useState<string | null>(null);
+  const [isNavigationActive, setIsNavigationActive] = useState(false);
+  const [mapBearing, setMapBearing] = useState(0);
+  const [userHeading, setUserHeading] = useState<number | null>(null);
   const loadTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const importedAreasRef = useRef<Set<string>>(new Set());
+  const headingSubscriptionRef = useRef<Location.LocationSubscription | null>(null);
 
   const {
     currentLocation,
@@ -55,6 +60,9 @@ export default function MapScreen() {
     return () => {
       if (loadTimeoutRef.current) {
         clearTimeout(loadTimeoutRef.current);
+      }
+      if (headingSubscriptionRef.current) {
+        headingSubscriptionRef.current.remove();
       }
     };
   }, []);
@@ -220,7 +228,7 @@ export default function MapScreen() {
   const handleNavigate = async () => {
     if (!selectedPOI || !currentLocation) return;
 
-    setIsNavigating(true);
+    setIsCreatingRoute(true);
     try {
       const response = await api.createRoute({
         origin: currentLocation,
@@ -249,7 +257,7 @@ export default function MapScreen() {
       console.error('Error creating route:', error);
       Alert.alert('Navigation Error', 'Failed to create route. Please try again.');
     } finally {
-      setIsNavigating(false);
+      setIsCreatingRoute(false);
     }
   };
 
@@ -262,9 +270,56 @@ export default function MapScreen() {
   };
 
   const handleCancelNavigation = () => {
+    stopHeadingTracking();
+    setIsNavigationActive(false);
     setAvailableRoutes([]);
     setSelectedRouteId(null);
     mapRef.current?.clearRoutes();
+    mapRef.current?.setBearing(0);
+    setMapBearing(0);
+  };
+
+  const startHeadingTracking = async () => {
+    try {
+      headingSubscriptionRef.current = await Location.watchHeadingAsync((heading) => {
+        setUserHeading(heading.trueHeading);
+      });
+    } catch (error) {
+      console.error('Error starting heading tracking:', error);
+    }
+  };
+
+  const stopHeadingTracking = () => {
+    if (headingSubscriptionRef.current) {
+      headingSubscriptionRef.current.remove();
+      headingSubscriptionRef.current = null;
+    }
+    setUserHeading(null);
+  };
+
+  const handleStartNavigation = () => {
+    if (!currentLocation || !selectedRouteId) return;
+
+    setIsNavigationActive(true);
+    startHeadingTracking();
+
+    // Zoom to user position with navigation view
+    const heading = userHeading ?? 0;
+    mapRef.current?.setNavigationView(
+      currentLocation.latitude,
+      currentLocation.longitude,
+      heading,
+      18
+    );
+  };
+
+  const handleBearingChange = (bearing: number) => {
+    setMapBearing(bearing);
+  };
+
+  const handleResetBearing = () => {
+    mapRef.current?.setBearing(0);
+    setMapBearing(0);
   };
 
   const routeDisplays: RouteDisplay[] = availableRoutes.map((route, index) => ({
@@ -292,25 +347,36 @@ export default function MapScreen() {
         pois={pois}
         routes={routeDisplays}
         userLocation={currentLocation}
+        userHeading={userHeading}
+        isNavigating={isNavigationActive}
         onMapMove={handleMapMove}
         onMarkerPress={handleMarkerPress}
         onRoutePress={handleRouteSelect}
         onMapReady={handleMapReady}
+        onBearingChange={handleBearingChange}
       />
 
-      <TouchableOpacity
-        style={styles.menuButton}
-        onPress={() => setIsMenuOpen(true)}
-      >
-        <View style={styles.burgerLine} />
-        <View style={styles.burgerLine} />
-        <View style={styles.burgerLine} />
-        {selectedCategories.length > 0 && (
-          <View style={styles.badge}>
-            <Text style={styles.badgeText}>{selectedCategories.length}</Text>
-          </View>
-        )}
-      </TouchableOpacity>
+      <View style={styles.topLeftControls}>
+        <TouchableOpacity
+          style={styles.menuButton}
+          onPress={() => setIsMenuOpen(true)}
+        >
+          <View style={styles.burgerLine} />
+          <View style={styles.burgerLine} />
+          <View style={styles.burgerLine} />
+          {selectedCategories.length > 0 && (
+            <View style={styles.badge}>
+              <Text style={styles.badgeText}>{selectedCategories.length}</Text>
+            </View>
+          )}
+        </TouchableOpacity>
+
+        <Compass
+          bearing={mapBearing}
+          onPress={handleResetBearing}
+          visible={mapBearing !== 0}
+        />
+      </View>
 
       <SideMenu
         isOpen={isMenuOpen}
@@ -370,11 +436,11 @@ export default function MapScreen() {
             </Text>
           )}
           <TouchableOpacity
-            style={[styles.navigateButton, isNavigating && styles.navigateButtonDisabled]}
+            style={[styles.navigateButton, isCreatingRoute && styles.navigateButtonDisabled]}
             onPress={handleNavigate}
-            disabled={isNavigating}
+            disabled={isCreatingRoute}
           >
-            {isNavigating ? (
+            {isCreatingRoute ? (
               <ActivityIndicator size="small" color="white" />
             ) : (
               <Text style={styles.navigateButtonText}>Navigate</Text>
@@ -415,8 +481,16 @@ export default function MapScreen() {
               </TouchableOpacity>
             ))}
           </ScrollView>
-          <TouchableOpacity style={styles.startNavigationButton}>
-            <Text style={styles.startNavigationButtonText}>Start Navigation</Text>
+          <TouchableOpacity
+            style={[
+              styles.startNavigationButton,
+              isNavigationActive && styles.stopNavigationButton,
+            ]}
+            onPress={isNavigationActive ? handleCancelNavigation : handleStartNavigation}
+          >
+            <Text style={styles.startNavigationButtonText}>
+              {isNavigationActive ? 'Stop Navigation' : 'Start Navigation'}
+            </Text>
           </TouchableOpacity>
         </View>
       )}

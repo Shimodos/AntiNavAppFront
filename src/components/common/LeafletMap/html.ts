@@ -7,10 +7,12 @@ export const generateMapHTML = (lat: number, lng: number, zoom: number): string 
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet-rotate@0.2.8/dist/leaflet-rotate-src.js"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body { width: 100%; height: 100%; overflow: hidden; }
     #map { width: 100%; height: 100%; }
+
     .custom-marker {
       width: 24px;
       height: 24px;
@@ -18,6 +20,8 @@ export const generateMapHTML = (lat: number, lng: number, zoom: number): string 
       border: 2px solid white;
       box-shadow: 0 2px 4px rgba(0,0,0,0.3);
     }
+
+    /* User location - circle mode (default) */
     .user-marker {
       width: 16px;
       height: 16px;
@@ -36,10 +40,50 @@ export const generateMapHTML = (lat: number, lng: number, zoom: number): string 
       left: -12px;
       animation: pulse 2s infinite;
     }
+
+    /* User location - navigation arrow mode */
+    .user-arrow-container {
+      width: 48px;
+      height: 48px;
+      position: relative;
+    }
+    .user-arrow {
+      width: 0;
+      height: 0;
+      border-left: 14px solid transparent;
+      border-right: 14px solid transparent;
+      border-bottom: 36px solid #4285F4;
+      position: absolute;
+      top: 4px;
+      left: 10px;
+      filter: drop-shadow(0 2px 4px rgba(0,0,0,0.3));
+    }
+    .user-arrow::after {
+      content: '';
+      position: absolute;
+      top: 8px;
+      left: -8px;
+      width: 0;
+      height: 0;
+      border-left: 8px solid transparent;
+      border-right: 8px solid transparent;
+      border-bottom: 20px solid white;
+    }
+    .user-arrow-accuracy {
+      width: 60px;
+      height: 60px;
+      background: rgba(66,133,244,0.15);
+      border-radius: 50%;
+      position: absolute;
+      top: -6px;
+      left: -6px;
+    }
+
     @keyframes pulse {
       0% { transform: scale(0.5); opacity: 1; }
       100% { transform: scale(1.5); opacity: 0; }
     }
+
     .leaflet-control-attribution { font-size: 10px; }
   </style>
 </head>
@@ -48,7 +92,12 @@ export const generateMapHTML = (lat: number, lng: number, zoom: number): string 
   <script>
     var map = L.map('map', {
       zoomControl: false,
-      attributionControl: true
+      attributionControl: true,
+      rotate: true,
+      rotateControl: false,
+      touchRotate: true,
+      shiftKeyRotate: true,
+      bearing: 0
     }).setView([${lat}, ${lng}], ${zoom});
 
     L.control.zoom({ position: 'topright' }).addTo(map);
@@ -62,6 +111,9 @@ export const generateMapHTML = (lat: number, lng: number, zoom: number): string 
     var userMarker = null;
     var routePolylines = {};
     var destinationMarker = null;
+    var isNavigating = false;
+    var currentBearing = 0;
+    var userHeading = 0;
 
     function getBoundsData() {
       var bounds = map.getBounds();
@@ -85,6 +137,18 @@ export const generateMapHTML = (lat: number, lng: number, zoom: number): string 
       }));
     });
 
+    // Track bearing changes
+    map.on('rotate', function() {
+      var bearing = map.getBearing ? map.getBearing() : 0;
+      if (Math.abs(bearing - currentBearing) > 0.5) {
+        currentBearing = bearing;
+        window.ReactNativeWebView.postMessage(JSON.stringify({
+          type: 'bearingChange',
+          bearing: bearing
+        }));
+      }
+    });
+
     map.whenReady(function() {
       var bounds = getBoundsData();
       window.ReactNativeWebView.postMessage(JSON.stringify({
@@ -97,18 +161,87 @@ export const generateMapHTML = (lat: number, lng: number, zoom: number): string 
       map.setView([lat, lng], zoom || map.getZoom(), { animate: true });
     };
 
-    window.updateUserLocation = function(lat, lng) {
-      if (userMarker) {
-        userMarker.setLatLng([lat, lng]);
+    window.setBearing = function(bearing) {
+      if (map.setBearing) {
+        map.setBearing(bearing);
+        currentBearing = bearing;
+      }
+    };
+
+    window.setNavigationView = function(lat, lng, heading, zoom) {
+      var targetZoom = zoom || 18;
+      if (map.setBearing) {
+        map.setBearing(heading);
+      }
+      map.setView([lat, lng], targetZoom, { animate: true });
+      currentBearing = heading;
+    };
+
+    window.setNavigationMode = function(enabled) {
+      isNavigating = enabled;
+      updateUserMarkerStyle();
+    };
+
+    function updateUserMarkerStyle() {
+      if (!userMarker) return;
+      var latLng = userMarker.getLatLng();
+      map.removeLayer(userMarker);
+
+      var icon;
+      if (isNavigating) {
+        icon = L.divIcon({
+          className: 'user-location-nav',
+          html: '<div class="user-arrow-container"><div class="user-arrow-accuracy"></div><div class="user-arrow" style="transform: rotate(' + userHeading + 'deg);"></div></div>',
+          iconSize: [48, 48],
+          iconAnchor: [24, 24]
+        });
       } else {
-        var userIcon = L.divIcon({
+        icon = L.divIcon({
           className: 'user-location',
           html: '<div class="user-marker-pulse"></div><div class="user-marker"></div>',
           iconSize: [16, 16],
           iconAnchor: [8, 8]
         });
+      }
+
+      userMarker = L.marker(latLng, {
+        icon: icon,
+        zIndexOffset: 1000,
+        rotationAngle: 0
+      }).addTo(map);
+    }
+
+    window.updateUserLocation = function(lat, lng, heading) {
+      userHeading = heading || 0;
+
+      if (userMarker) {
+        userMarker.setLatLng([lat, lng]);
+        // Update arrow rotation if in navigation mode
+        if (isNavigating) {
+          var arrowEl = document.querySelector('.user-arrow');
+          if (arrowEl) {
+            arrowEl.style.transform = 'rotate(' + userHeading + 'deg)';
+          }
+        }
+      } else {
+        var icon;
+        if (isNavigating) {
+          icon = L.divIcon({
+            className: 'user-location-nav',
+            html: '<div class="user-arrow-container"><div class="user-arrow-accuracy"></div><div class="user-arrow" style="transform: rotate(' + userHeading + 'deg);"></div></div>',
+            iconSize: [48, 48],
+            iconAnchor: [24, 24]
+          });
+        } else {
+          icon = L.divIcon({
+            className: 'user-location',
+            html: '<div class="user-marker-pulse"></div><div class="user-marker"></div>',
+            iconSize: [16, 16],
+            iconAnchor: [8, 8]
+          });
+        }
         userMarker = L.marker([lat, lng], {
-          icon: userIcon,
+          icon: icon,
           zIndexOffset: 1000
         }).addTo(map);
       }
